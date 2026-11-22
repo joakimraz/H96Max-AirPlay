@@ -1,0 +1,109 @@
+name: H96 Max AirPlay - Build corrected APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download upstream source v0.0.36
+        uses: actions/checkout@v4
+        with:
+          repository: jqssun/android-airplay-server
+          ref: v0.0.36
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Apply H96 Max Picture-in-Picture crash fix
+        shell: bash
+        run: |
+          cat > /tmp/h96max-pip.patch <<'PATCH_END'
+          --- a/app/src/main/kotlin/io/github/jqssun/airplay/MainActivity.kt
+          +++ b/app/src/main/kotlin/io/github/jqssun/airplay/MainActivity.kt
+          @@ -9,4 +9,5 @@
+           import android.os.Bundle
+           import android.os.IBinder
+           import android.util.Rational
+          +import android.util.Log
+           import android.view.WindowManager
+          @@ -35,4 +35,5 @@
+               private val viewModel: MainViewModel by viewModels()
+               private var service: AirPlayService? = null
+               val isInPip = mutableStateOf(false)
+          +    private var pipRejectedBySystem = false
+               private val logCallback: (String) -> Unit = { viewModel.addLog(it) }
+          @@ -89,12 +89,22 @@
+          -        // auto-enter pre-declared in pip params
+          -        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+          +        // PiP is optional; some TV-box firmwares advertise it but reject its use.
+          +        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+          +            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+                       lifecycleScope.launch {
+                           repeatOnLifecycle(Lifecycle.State.STARTED) {
+                               combine(
+                                   viewModel.serverState, viewModel.connectionCount,
+                                   viewModel.videoPlaybackActive, viewModel.videoPlaybackAspect,
+                                   viewModel.videoAspect
+          -                    ) { _, _, _, _, _ -> }.collect { setPictureInPictureParams(_pipParams()) }
+          +                    ) { _, _, _, _, _ -> }.collect {
+          +                        if (!pipRejectedBySystem) {
+          +                            try {
+          +                                setPictureInPictureParams(_pipParams())
+          +                            } catch (e: IllegalStateException) {
+          +                                pipRejectedBySystem = true
+          +                                Log.w("AirPlayServer", "PiP rejected; running without PiP", e)
+          +                            }
+          +                        }
+          +                    }
+                           }
+                       }
+                   }
+          @@ -155,4 +155,10 @@
+               fun enterPip() {
+          -        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+          -        enterPictureInPictureMode(_pipParams())
+          +        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || pipRejectedBySystem ||
+          +            !packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+          +        try {
+          +            enterPictureInPictureMode(_pipParams())
+          +        } catch (e: IllegalStateException) {
+          +            pipRejectedBySystem = true
+          +            Log.w("AirPlayServer", "PiP rejected; running without PiP", e)
+          +        }
+               }
+          PATCH_END
+          git apply --check /tmp/h96max-pip.patch
+          git apply /tmp/h96max-pip.patch
+
+      - name: Configure Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '21'
+          cache: gradle
+
+      - name: Configure Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          sdkmanager --install "platforms;android-37" "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - name: Build installable debug APK
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Save APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AirPlay-H96Max-fixed-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
