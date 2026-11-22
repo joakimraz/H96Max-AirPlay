@@ -71,7 +71,13 @@ jobs:
           echo "ANDROID_HOME=${ANDROID_HOME}"
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
           test -n "$SDKMANAGER"
-          "$SDKMANAGER" --install "platforms;android-37" "ndk;27.0.12077973" "cmake;3.22.1"
+          "$SDKMANAGER" --install "platforms;android-37.0" "ndk;27.0.12077973" "cmake;3.22.1"
+          test -f "$ANDROID_HOME/platforms/android-37.0/android.jar"
+          # Some AGP versions look for android-37 even though the SDK is named android-37.0.
+          if [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s android-37.0 "$ANDROID_HOME/platforms/android-37"
+          fi
+          ls -ld "$ANDROID_HOME/platforms/android-37" "$ANDROID_HOME/platforms/android-37.0"
 
       - name: Build corrected APK for ARM32
         shell: bash
